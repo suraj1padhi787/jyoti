@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Private Chat - <%= user %></title>
+    <link rel="stylesheet" href="/css/style.css">
+    <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+
+<audio id="notify" src="https://notificationsounds.com/storage/sounds/file-sounds-1150-pristine.mp3"></audio>
+
+<div class="chat-container">
+    <!-- Header -->
+    <div class="header">
+        <div class="top-header">
+            <span>Chatting as <b><%= user %></b></span>
+            <a href="/profile?user=<%= user %>" class="change-btn">Change Pic</a>
+        </div>
+        <div class="partner-status">
+            Partner Status: <span id="partner-status">Loading...</span>
+        </div>
+    </div>
+
+    <!-- Messages -->
+    <div id="messages" class="messages" style="background-image: url('/profiles/<%= user === 'suraj' ? 'jyoti' : 'suraj' %>.png');">
+        <% chats.forEach(chat => { %>
+            <div class="message <%= chat.user === user ? 'my' : 'other' %>" id="msg-<%= chat.id %>">
+                <div class="bubble">
+                    <img src="/profiles/<%= chat.user %>.png" class="profile-pic">
+
+                    <% if(chat.voice) { %>
+                        <audio controls src="/uploads/<%= chat.voice %>" style="width:100%;"></audio>
+                    <% } else if(chat.image) { %>
+                        <img src="/uploads/<%= chat.image %>" class="chat-img">
+                    <% } else { %>
+                        <span class="msg-text"><%= chat.msg %></span>
+                    <% } %>
+
+                    <div class="time"><%= chat.time %></div>
+
+                    <% if(chat.user === user) { %>
+                        <div class="actions">
+                            <% if(!chat.voice && !chat.image) { %>
+                                <button onclick="editMessage(<%= chat.id %>, '<%- (chat.msg || '').replace(/'/g,"\\'") %>')">✏️</button>
+
+                            <% } %>
+                            <button onclick="deleteMessage(<%= chat.id %>)">🗑️</button>
+                        </div>
+                    <% } %>
+                </div>
+            </div>
+        <% }) %>
+    </div>
+
+    <div id="typing-status" class="typing"></div>
+
+    <!-- Input -->
+    <form id="send-form" class="input-area">
+        <input type="text" id="msg" autocomplete="off" placeholder="Type a message..." />
+        <label for="image-upload" class="file-btn">📷</label>
+        <input type="file" id="image-upload" style="display: none;">
+        <button type="button" id="record-btn">🎙️</button>
+        <button type="submit">➤</button>
+    </form>
+    <span id="image-info" style="color:#999; font-size:12px; padding-left:10px;"></span>
+</div>
+
+<script>
+    const socket = io();
+    const user = '<%= user %>';
+    const form = document.getElementById('send-form');
+    const msgInput = document.getElementById('msg');
+    const imageUpload = document.getElementById('image-upload');
+    const messages = document.getElementById('messages');
+    const typingStatus = document.getElementById('typing-status');
+    const notify = document.getElementById('notify');
+    const recordBtn = document.getElementById('record-btn');
+
+    let mediaRecorder;
+    let audioChunks = [];
+
+    function getPartner(u) {
+        return u === 'suraj' ? 'jyoti' : 'suraj';
+    }
+
+    socket.emit('join', { user });
+
+    socket.on('chat', (data) => {
+        const el = document.createElement('div');
+        el.id = "msg-" + (data.id || Date.now());
+        el.className = (data.user === user) ? 'message my' : 'message other';
+        const profile = `/profiles/${data.user}.png`;
+
+        if(data.voice){
+            el.innerHTML = `<div class="bubble">
+                                <img src="${profile}" class="profile-pic">
+                                <audio controls src="/uploads/${data.voice}" style="width:100%;"></audio>
+                                <div class="time">${data.time || new Date().toLocaleTimeString()}</div>
+                                ${data.user === user ? `<div class="actions"><button onclick="deleteMessage(${data.id})">🗑️</button></div>` : ''}
+                            </div>`;
+        } else if(data.image){
+            el.innerHTML = `<div class="bubble">
+                                <img src="${profile}" class="profile-pic">
+                                <img src="/uploads/${data.image}" class="chat-img">
+                                <div class="time">${data.time}</div>
+                                ${data.user === user ? `<div class="actions"><button onclick="deleteMessage(${data.id})">🗑️</button></div>` : ''}
+                            </div>`;
+        } else {
+            el.innerHTML = `<div class="bubble">
+                                <img src="${profile}" class="profile-pic">
+                                <span class="msg-text">${data.msg}</span>
+                                <div class="time">${data.time}</div>
+                                ${data.user === user ? `<div class="actions"><button onclick="editMessage(${data.id}, '${(data.msg || '').replace(/'/g,"\\'")}')">✏️</button> <button onclick="deleteMessage(${data.id})">🗑️</button></div>` : ''}
+                            </div>`;
+        }
+
+        messages.appendChild(el);
+        messages.scrollTop = messages.scrollHeight;
+
+        if(data.user !== user){
+            notify.play();
+        }
+    });
+
+    recordBtn.addEventListener('click', async () => {
+        if (!mediaRecorder || mediaRecorder.state === "inactive") {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream);
+            mediaRecorder.start();
+            recordBtn.innerText = "⏹️";
+
+            mediaRecorder.ondataavailable = e => {
+                audioChunks.push(e.data);
+            };
+
+            mediaRecorder.onstop = () => {
+                const blob = new Blob(audioChunks, { type: 'audio/webm' });
+                const formData = new FormData();
+                formData.append('voice', blob, 'voice.webm');
+
+                fetch('/upload-voice', { method: 'POST', body: formData })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.status === 'success') {
+                            socket.emit('chat', { user, voice: data.filename });
+                        }
+                    });
+
+                audioChunks = [];
+                recordBtn.innerText = "🎙️";
+            };
+        } else if (mediaRecorder.state === "recording") {
+            mediaRecorder.stop();
+        }
+    });
+
+    imageUpload.addEventListener('change', () => {
+        if (imageUpload.files.length > 0) {
+            document.getElementById('image-info').innerText = "Selected: " + imageUpload.files[0].name;
+        } else {
+            document.getElementById('image-info').innerText = "";
+        }
+    });
+
+    function editMessage(id, oldMsg) {
+        const newMsg = prompt("Edit Message:", oldMsg);
+        if(newMsg && newMsg.trim()){
+            socket.emit('edit-message', { id, newMsg, user });
+        }
+    }
+
+    socket.on('edit-message', (data) => {
+        const target = document.querySelector(`#msg-${data.id} .msg-text`);
+        if(target) target.innerText = data.newMsg;
+    });
+
+    function deleteMessage(id) {
+        if(confirm("Are you sure you want to delete this message?")){
+            socket.emit('delete-message', { id, user });
+        }
+    }
+
+    socket.on('delete-message', (data) => {
+        const el = document.getElementById("msg-" + data.id);
+        if(el) el.remove();
+    });
+
+    msgInput.addEventListener('input', () => {
+        if (msgInput.value) {
+            socket.emit('typing', { user });
+        } else {
+            socket.emit('stop-typing', { user });
+        }
+    });
+
+    socket.on('typing', (data) => {
+        typingStatus.innerText = data.user + ' is typing...';
+    });
+
+    socket.on('stop-typing', () => {
+        typingStatus.innerText = '';
+    });
+
+    socket.on('update-status', (data) => {
+        if(data.user === getPartner(user)){
+            let text = (data.status === 'online') ? "Online" : "Last Seen: " + new Date(data.lastSeen).toLocaleTimeString();
+            document.getElementById('partner-status').innerHTML = text;
+        }
+    });
+
+    form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        if (imageUpload.files.length > 0) {
+            const formData = new FormData();
+            formData.append('file', imageUpload.files[0]);
+            fetch('/upload', { method: 'POST', body: formData })
+            .then(res => res.json())
+            .then(data => {
+                socket.emit('chat', { user, image: data.filename });
+                imageUpload.value = '';
+                document.getElementById('image-info').innerText = '';
+            });
+        } else if (msgInput.value.trim()) {
+            socket.emit('chat', { user, msg: msgInput.value });
+            msgInput.value = '';
+            socket.emit('stop-typing', { user });
+        }
+    });
+
+</script>
+
+</body>
+</html>
